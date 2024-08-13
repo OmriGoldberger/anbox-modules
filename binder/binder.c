@@ -3132,12 +3132,9 @@ static void binder_transaction(struct binder_proc *proc,
     struct lsmblob blob;
     struct lsmcontext context = {};
     security_task_getsecid_obj(proc->tsk, &blob);
-    ret = security_secid_to_secctx(&blob, &context);
+    ret = security_secid_to_secctx(&blob, &context, &secctx_sz);
     if (ret == 0) {
-        // The actual context and size are now opaque to us
-        // We'll just pass the lsmcontext structure around
-        secctx = (void *)&context;
-        secctx_sz = sizeof(context);
+        secctx = context.context;  // Assuming context is a member of lsmcontext
     }
 #else
     u32 secid;
@@ -3194,8 +3191,12 @@ static void binder_transaction(struct binder_proc *proc,
 			WARN_ON(1);
 		}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
-	security_release_secctx((struct lsmcontext *)secctx);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0)
+	struct lsmcontext context = {
+		.context = secctx,
+		.len = secctx_sz
+	};
+	security_release_secctx(&context);
 #else
     security_release_secctx(secctx, secctx_sz);
 #endif
@@ -3534,8 +3535,12 @@ err_copy_data_failed:
 err_binder_alloc_buf_failed:
 err_bad_extra_size:
 	if (secctx){
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
-	security_release_secctx((struct lsmcontext *)secctx);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,5,0)
+	struct lsmcontext context = {
+		.context = secctx,
+		.len = secctx_sz
+	};
+	security_release_secctx(&context);
 #else
     security_release_secctx(secctx, secctx_sz);
 #endif
