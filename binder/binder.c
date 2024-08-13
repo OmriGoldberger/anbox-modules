@@ -42,6 +42,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/lsm_hooks.h>
 #include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/freezer.h>
@@ -3125,15 +3126,18 @@ static void binder_transaction(struct binder_proc *proc,
 	t->priority = task_nice(current);
 
 	if (target_node && target_node->txn_security_ctx) {
-		u32 secid;
 		size_t added_size;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
-		security_task_getsecid_obj(proc->tsk, &secid);
+    struct lsmblob secid;
+    security_task_getsecid_obj(proc->tsk, &secid);
+    ret = security_secid_to_secctx(&secid, &secctx, &secctx_sz);
 #else
-		security_task_getsecid(proc->tsk, &secid);
+    u32 secid;
+    security_task_getsecid(proc->tsk, &secid);
+    ret = security_secid_to_secctx(secid, &secctx, &secctx_sz);
 #endif
-		ret = security_secid_to_secctx(secid, &secctx, &secctx_sz);
+
 		if (ret) {
 			return_error = BR_FAILED_REPLY;
 			return_error_param = ret;
@@ -3182,7 +3186,14 @@ static void binder_transaction(struct binder_proc *proc,
 			t->security_ctx = 0;
 			WARN_ON(1);
 		}
-		security_release_secctx(secctx, secctx_sz);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
+    struct lsmcontext lsmctx = {.ctx = secctx, .len = secctx_sz};
+    security_release_secctx(&lsmctx);
+#else
+    security_release_secctx(secctx, secctx_sz);
+#endif
+
 		secctx = NULL;
 	}
 	t->buffer->debug_id = t->debug_id;
@@ -3516,8 +3527,14 @@ err_copy_data_failed:
 	binder_alloc_free_buf(&target_proc->alloc, t->buffer);
 err_binder_alloc_buf_failed:
 err_bad_extra_size:
-	if (secctx)
-		security_release_secctx(secctx, secctx_sz);
+	if (secctx){
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 13, 0)
+    struct lsmcontext lsmctx = {.ctx = secctx, .len = secctx_sz};
+    security_release_secctx(&lsmctx);
+#else
+    security_release_secctx(secctx, secctx_sz);
+#endif
+	}
 err_get_secctx_failed:
 	kfree(tcomplete);
 	binder_stats_deleted(BINDER_STAT_TRANSACTION_COMPLETE);
@@ -4952,10 +4969,10 @@ static int binder_ioctl_set_ctx_mgr(struct file *filp,
 		ret = -EBUSY;
 		goto out;
 	}
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,15,2))
-	ret = security_binder_set_context_mgr(proc->cred);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 15, 2)
+    ret = security_binder_set_context_mgr(proc->cred);
 #else
-	ret = security_binder_set_context_mgr(proc->tsk);
+    ret = security_binder_set_context_mgr(proc->tsk);
 #endif
 	if (ret < 0)
 		goto out;
